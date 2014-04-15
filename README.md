@@ -20,6 +20,38 @@ class is being used.
 
 * NuGet package: [FSock](https://www.nuget.org/packages/FSock)
 * API:
-** [FSock.fsi](src/FSock/FSock.fsi) - main API
-** [Sockets.fsi](src/FSock/Sockets.fsi) - socket details
-** [Definitions.fsi](src/FSock/Sockets.fsi) - channels, futures, etc
+  * [FSock.fsi](src/FSock/FSock.fsi) - main API
+  * [Sockets.fsi](src/FSock/Sockets.fsi) - socket details
+  * [Definitions.fsi](src/FSock/Sockets.fsi) - channels, futures, etc
+
+## Example
+
+```fsharp
+let client =
+  async {
+    use! cli =
+      FSock.Client.AsyncConnect(fun cfg ->
+        cfg.Report <- fun err -> eprintfn "%O" err
+        cfg.Port <- 8091)
+    do! cli.Connection.AsyncSendMessage("HELLO"B)
+    let! msg = cli.Connection.AsyncReceiveMessage()
+    do printfn "Received back: %i bytes" msg.Length
+    return ()
+  }
+  
+let server =
+  async {
+    FSock.Server.Start(fun cfg ->
+      cfg.Report <- fun err -> eprintfn "%O" err
+      cfg.Port <- 8091
+      cfg.OnConnect <- fun conn ->
+        async {
+          use _ = conn
+          let! msg = conn.AsyncReceiveMessage()
+          do printfn "RECEIVED: %i bytes" msg.Length 
+          do! conn.AsyncSendMessage(msg)
+          return ()
+        }
+        |> Async.Start)  
+  }
+```
