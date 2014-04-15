@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>FSock</id>
+    <version>0.0.1</version>
+    <title>FSock</title>
+    <authors>IntelliFactory</authors>
+    <owners>IntelliFactory</owners>
+    <copyright>2008-2014 IntelliFactory</copyright>
+    <projectUrl>https://github.com/intellifactory/fsock/</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <licenseUrl>https://github.com/intellifactory/fsock/blob/master/LICENSE.md</licenseUrl>
+    <description>Implements a simple API for creating async socket clients and servers that can exchange raw bytes or binary messages. Imagined as a lightweight managed async zeromq replacement focusing on TCP sockets. Strives to be portable to Mono.</description>
+    <summary>Simple API for communicating async socket clients and servers.</summary>
+    <tags>sockets, F#, async, ipc</tags>
+  </metadata>
+  <files>
+    <file src="src\FSock\bin\Release\FSock.dll" target="lib\net40" />
+    <file src="src\FSock\bin\Release\FSock.xml" target="lib\net40" />
+  </files>
+</package>

@@ -1,0 +1,45 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Express 2013 for Web
+VisualStudioVersion = 12.0.30324.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "_", "_", "{AA6BAA77-923A-44DB-8482-39FD7BBCF49F}"
+	ProjectSection(SolutionItems) = preProject
+		appveyor.yml = appveyor.yml
+		build.cmd = build.cmd
+		FSock.nuspec = FSock.nuspec
+		LICENSE.md = LICENSE.md
+		README.md = README.md
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{E946C46A-7A5D-473C-B92A-E1E0441770BE}"
+	ProjectSection(SolutionItems) = preProject
+		tests\All.fsx = tests\All.fsx
+		tests\Collections.fsx = tests\Collections.fsx
+		tests\FSock.fsx = tests\FSock.fsx
+		tests\Messaging.fsx = tests\Messaging.fsx
+		tests\Testing.fsx = tests\Testing.fsx
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{8A56FBA3-62F7-487B-868B-3E23732C51B1}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FSock", "src\FSock\FSock.fsproj", "{CBCDC06E-E8A4-483B-A269-AD652B9F43BB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CBCDC06E-E8A4-483B-A269-AD652B9F43BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CBCDC06E-E8A4-483B-A269-AD652B9F43BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CBCDC06E-E8A4-483B-A269-AD652B9F43BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CBCDC06E-E8A4-483B-A269-AD652B9F43BB}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{CBCDC06E-E8A4-483B-A269-AD652B9F43BB} = {8A56FBA3-62F7-487B-868B-3E23732C51B1}
+	EndGlobalSection
+EndGlobal
