@@ -38,20 +38,22 @@ let client =
     do printfn "Received back: %i bytes" msg.Length
     return ()
   }
-  
+
 let server =
   async {
-    FSock.Server.Start(fun cfg ->
-      cfg.Report <- fun err -> eprintfn "%O" err
-      cfg.Port <- 8091
-      cfg.OnConnect <- fun conn ->
-        async {
-          use _ = conn
-          let! msg = conn.AsyncReceiveMessage()
-          do printfn "RECEIVED: %i bytes" msg.Length 
-          do! conn.AsyncSendMessage(msg)
-          return ()
-        }
-        |> Async.Start)  
+    use serv =
+      FSock.Server.Start(fun cfg ->
+          cfg.Report <- fun err -> eprintfn "%O" err
+          cfg.Port <- 8091
+          cfg.OnConnect <- fun conn ->
+            async {
+              use _ = conn
+              let! msg = conn.AsyncReceiveMessage()
+              do printfn "RECEIVED: %i bytes" msg.Length 
+              do! conn.AsyncSendMessage(msg)
+              return ()
+            }
+            |> Async.Start)
+    return ()
   }
 ```
