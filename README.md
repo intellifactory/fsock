@@ -22,38 +22,8 @@ class is being used.
 * API:
   * [FSock.fsi](src/FSock/FSock.fsi) - main API
   * [Sockets.fsi](src/FSock/Sockets.fsi) - socket details
-  * [Definitions.fsi](src/FSock/Sockets.fsi) - channels, futures, etc
+  * [Definitions.fsi](src/FSock/Definitions.fsi) - channels, futures, etc
 
 ## Example
 
-```fsharp
-let client =
-  async {
-    use! cli =
-      FSock.Client.AsyncConnect(fun cfg ->
-        cfg.Report <- fun err -> eprintfn "%O" err
-        cfg.Port <- 8091)
-    do! cli.Connection.AsyncSendMessage("HELLO"B)
-    let! msg = cli.Connection.AsyncReceiveMessage()
-    do printfn "Received back: %i bytes" msg.Length
-    return ()
-  }
-
-let server =
-  async {
-    use serv =
-      FSock.Server.Start(fun cfg ->
-          cfg.Report <- fun err -> eprintfn "%O" err
-          cfg.Port <- 8091
-          cfg.OnConnect <- fun conn ->
-            async {
-              use _ = conn
-              let! msg = conn.AsyncReceiveMessage()
-              do printfn "RECEIVED: %i bytes" msg.Length 
-              do! conn.AsyncSendMessage(msg)
-              return ()
-            }
-            |> Async.Start)
-    return ()
-  }
-```
+See [FSock.fsx](tests/FSock.fsx) for an example.
