@@ -22,39 +22,6 @@ open System
 open System.Threading
 open System.Threading.Tasks
 
-/// Represents a channel that can be read from.
-[<Sealed>]
-type InputChannel =
-
-    /// Reads into target buffer, returns number of bytes read.
-    member AsyncRead : target: byte[] * offset: int * count: int -> Async<int>
-
-    /// Reads until the target buffer is entirely filled.
-    member AsyncReadExact : target: byte[] * offset: int * count: int -> Async<unit>
-
-/// Represents a channel that can be written to.
-[<Sealed>]
-type OutputChannel =
-
-    /// Writes from the source buffer, returns when the write is complete.
-    member AsyncWrite : source: byte[] * offset: int * count: int -> Async<unit>
-
-/// A pipe of connected InputChannel and OutputChannel.
-[<Sealed>]
-type Channel =
-
-    /// Constructs a new channel with a given capacity.
-    new : capacity: int -> Channel
-
-    /// Constructs a new channel with a default capacity.
-    new : unit -> Channel
-
-    /// The input end of the pipe.
-    member In : InputChannel
-
-    /// The output end of the pipe.
-    member Out : OutputChannel
-
 /// Write-once variables for synchronization (aka IVar).
 [<Sealed>]
 type Future<'T> =
@@ -67,6 +34,9 @@ type Future<'T> =
 
     /// Schedules the continuation to execute when the Future arrives.
     member On : Action<'T> -> unit
+
+    /// Tests if the future has arrived.
+    member Is : bool
 
 /// Represents a Future together with the ability to imperatively set it.
 [<Sealed>]
@@ -85,54 +55,68 @@ type Future =
     /// Creates a new Future.
     static member Create<'T> : unit -> FutureHandle<'T>
 
-/// Classifies results of executing a logical thread.
-type Exit =
-    | ErrorExit of exn
-    | NormalExit
+    /// Waits for both.
+    static member internal Both : Future<unit> * Future<unit> -> Future<unit>
 
-    /// Extracts the associated exception, if any.
-    member Exception : exn
+    /// First of two.
+    static member internal First : Future<'T> * Future<'T> -> Future<'T>
 
-    /// Tests if the result is an error.
-    member IsError : bool
-
-/// Inspired by Racket custodians, this object manages finalization.
-/// Currently designed to manage a single logical thread (see Start).
+/// Represents a channel that can be read from.
 [<Sealed>]
-type Custodian =
+type InputChannel =
 
-    /// Disposing the Custodian finalizes all attached resources.
-    interface IDisposable
+    /// Whether the channel is closed.
+    member IsClosed : bool
 
-    /// Creates a new Custodian with a given exception reporter.
-    new : Action<exn> -> Custodian
+    /// Reads into target buffer, returns number of bytes read.
+    member AsyncRead : target: byte[] * offset: int * count: int -> Async<int>
 
-    /// Creates a new Custodian that ignores errors.
-    new : unit -> Custodian
+    /// Reads until the target buffer is entirely filled.
+    member AsyncReadExact : target: byte[] * offset: int * count: int -> Async<unit>
 
-    /// Adds a resource to finalize together with the Custodian.
-    member Add : IDisposable -> unit
+/// Represents a channel that can be written to.
+[<Sealed>]
+type OutputChannel =
 
-    /// Schedules an Async job to run on finalization.
-    member AsyncFinally : Async<unit> -> unit
+    /// Writes from the source buffer, returns when the write is complete.
+    member AsyncWrite : source: byte[] * offset: int * count: int -> Async<unit>
 
-    /// Closes the custodian and finalizes associated resource.
-    /// Same as Dispose in the IDisposable implementation.
-    member Close : Exit -> unit
+    /// Whether the channel is closed.
+    member IsClosed : bool
 
-    /// Same as `Close NormalExit`.
+/// A pipe of connected InputChannel and OutputChannel.
+[<Sealed>]
+type Channel =
+
+    /// Constructs a new channel with a given capacity.
+    new : capacity: int -> Channel
+
+    /// Constructs a new channel with a default capacity.
+    new : unit -> Channel
+
+    /// Closes the channel, releasing any processes waiting on the channel.
     member Close : unit -> unit
 
-    /// Schedules a simple job ot run on finalization.
-    member Finally : Action -> unit
+    /// Arrives after Close, when all buffers are flushed.
+    member Done : Future<unit>
 
-    /// Reports an exception.
-    member Report : exn -> unit
+    /// The input end of the pipe.
+    member In : InputChannel
 
-    /// Forks the given thread and waits until it completes,
-    /// then disposes resources managed by this Custodian.
-    member Start : Async<unit> -> unit
+    /// The output end of the pipe.
+    member Out : OutputChannel
 
-    /// The result of closing the Custodian.
-    member Closed : Future<Exit>
+    /// Whether the channel is closed.
+    member IsClosed : bool
 
+/// Async utilities.
+module internal Async =
+
+    /// IDisposable pattern with async finalizer.
+    val Wrap : fin: Async<unit> -> Async<'T> -> Async<'T>
+
+    /// Starts a given thread, setting the FutureHandle when done.
+    val StartThread : FutureHandle<unit> -> Async<unit> -> unit
+
+    /// Starts a given thread, setting the FutureHandle when done.
+    val CaptureError : (exn -> unit) -> Async<unit> -> Async<unit>

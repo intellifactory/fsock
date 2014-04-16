@@ -33,7 +33,6 @@ exception SocketException of SocketError
 /// allocate new buffers per Socket.
 [<Sealed>]
 type SocketPool =
-    interface IDisposable
 
     /// Constructs a pool with default capacity.
     new : unit -> SocketPool
@@ -44,8 +43,26 @@ type SocketPool =
 /// Facade for socket programming.
 module internal SocketUtility =
 
+    /// Common arguments to Fork* operations.
+    type Context =
+        {
+            Report : exn -> unit
+            Socket : Socket
+            SocketPool : SocketPool
+        }
+
+    /// Forks a process that copies all bytes
+    /// received from the Socket to the given OutputChannel.
+    /// Returns a future corresponding to process termination.
+    val ForkReceiver : Context -> OutputChannel -> Future<unit>
+
+    /// Forks a process that sends all bytes
+    /// taken from the InputChannel to the given Socket.
+    /// Returns a future corresponding to process termination.
+    val ForkSender : Context -> InputChannel -> Future<unit>
+
     /// Facade for Socket.AsyncAccept.
-    val Accept : Socket -> Async<Socket>
+    val Accept : stopRequested: Future<unit> -> Socket -> Async<option<Socket>>
 
     /// Facade for Socket.AsyncConnect.
     val Connect : IPEndPoint -> Async<Socket>
@@ -53,13 +70,3 @@ module internal SocketUtility =
     /// Facade for Socket.AsyncDisconnect.
     val Disconnect : Socket -> Async<unit>
 
-    /// Swallows common cases of SocketException not considered to be error conditions.
-    val IgnoreErrors : Async<unit> -> Async<unit>
-
-    /// Constructs a tread that, when started, copies all bytes
-    /// received from the Socket to the given OutputChannel.
-    val Receive : SocketPool -> Socket -> OutputChannel -> Async<unit>
-
-    /// Constructs a tread that, when started, copies all bytes
-    /// from the InputChannel to the Socket.
-    val Send : SocketPool -> Socket -> InputChannel -> Async<unit>

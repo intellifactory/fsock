@@ -24,6 +24,23 @@ open System.Collections.Generic
 open System.Threading
 
 [<Sealed>]
+type LockedHashSet<'T>() =
+    let root = obj ()
+    let set = HashSet<'T>()
+
+    member h.Add(v) =
+        lock root (fun () -> set.Add(v) |> ignore)
+
+    member h.Remove(v) =
+        lock root (fun () -> set.Remove(v) |> ignore)
+
+    member h.ToArray() =
+        lock root <| fun () ->
+            let arr = Array.zeroCreate set.Count
+            set.CopyTo(arr)
+            arr
+
+[<Sealed>]
 type Bag<'T>(items: seq<'T>) =
     let root = obj ()
     let items = Queue<'T>(items)
@@ -106,9 +123,13 @@ type RingBuffer<'T>(capacity: int) =
 
 [<Sealed>]
 type RQReader<'T>(b: 'T[], o: int, c: int, k: int -> unit) =
+
     member r.Read(buf: RingBuffer<'T>) =
         let n = buf.Take(b, o, c)
         async { return k n } |> Async.Start
+
+    member r.Dismiss() =
+        async { return k 0 } |> Async.Start
 
 [<Sealed>]
 type RQWriter<'T>(b: 'T[], k: unit -> unit) =
@@ -116,6 +137,9 @@ type RQWriter<'T>(b: 'T[], k: unit -> unit) =
     let mutable count = b.Length
 
     new (b, o, c, k) = RQWriter(Array.sub b o c, k)
+
+    member r.Dismiss() =
+        async { return k () } |> Async.Start
 
     member r.Write(buf: RingBuffer<'T>) =
         let n = buf.Add(b, offset, count)
@@ -128,21 +152,43 @@ type RQWriter<'T>(b: 'T[], k: unit -> unit) =
             false
 
 [<Sealed>]
-type RingQueue<'T>(capacity: int) =
+type RingQueue<'T>(capacity: int, onFinalized: unit -> unit) =
     let root = obj ()
     let buf = RingBuffer<'T>(capacity)
     let readers = Queue<RQReader<'T>>()
     let writers = Queue<RQWriter<'T>>()
+    let mutable closed = false
+    let mutable finalized = false
+
+    let finalize () =
+        if closed && not finalized && buf.Count = 0 then
+            finalized <- true
+            async { return onFinalized () }
+            |> Async.Start
 
     let rec progress () =
         if buf.Count > 0 && readers.Count > 0 then
             let r = readers.Dequeue()
             r.Read(buf)
             progress ()
+        elif closed then
+            finalize ()
+            while writers.Count > 0 do
+                writers.Dequeue().Dismiss()
+            while readers.Count > 0 do
+                readers.Dequeue().Dismiss()
         elif writers.Count > 0 && not buf.IsFull then
             let w = writers.Peek()
             if w.Write(buf) then
                 writers.Dequeue() |> ignore
+            progress ()
+
+    member rb.IsClosed =
+        closed
+
+    member rb.Close() =
+        lock root <| fun () ->
+            closed <- true
             progress ()
 
     member rb.Read(b, o, c, k) =
@@ -158,22 +204,30 @@ type RingQueue<'T>(capacity: int) =
             Monitor.Exit(root)
 
     member rb.Write(b, o, c, k) =
-        Monitor.Enter(root)
-        let n = buf.Add(b, o, c)
-        if n = c then
-            progress ()
-            Monitor.Exit(root)
-            k ()
-        else
-            writers.Enqueue(RQWriter(b, o + n, c - n, k))
-            progress ()
-            Monitor.Exit(root)
+        if c <= 0 then k () else
+            Monitor.Enter(root)
+            if closed then
+                Monitor.Exit(root)
+                k ()
+            else
+                let n = buf.Add(b, o, c)
+                if n = c then
+                    progress ()
+                    Monitor.Exit(root)
+                    k ()
+                else
+                    writers.Enqueue(RQWriter(b, o + n, c - n, k))
+                    progress ()
+                    Monitor.Exit(root)
 
     member rb.Write(b, k) =
         rb.Write(b, 0, Array.length b, k)
 
     member rb.AsyncRead(b, o, c) =
-        Async.FromContinuations(fun (ok, _, _) -> rb.Read(b, o, c, ok))
+        if c <= 0 then
+            async.Return(0)
+        else
+            Async.FromContinuations(fun (ok, _, _) -> rb.Read(b, o, c, ok))
 
     member rb.AsyncReadExact(b, o, c) =
         async {

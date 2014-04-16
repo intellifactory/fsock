@@ -27,19 +27,12 @@ open System.Threading
 type InputChannel(rb: RingQueue<byte>) =
     member ch.AsyncRead(b, o, c) = rb.AsyncRead(b, o, c)
     member ch.AsyncReadExact(b, o, c) = rb.AsyncReadExact(b, o, c)
+    member ch.IsClosed = rb.IsClosed
 
 [<Sealed>]
 type OutputChannel(rb: RingQueue<byte>) =
     member ch.AsyncWrite(b, o, c) = rb.AsyncWrite(b, o, c)
-
-[<Sealed>]
-type Channel(capacity: int) =
-    let rb = RingQueue<byte>(capacity)
-    let ch1 = InputChannel(rb)
-    let ch2 = OutputChannel(rb)
-    new () = Channel(16384)
-    member ch.In = ch1
-    member ch.Out = ch2
+    member ch.IsClosed = rb.IsClosed
 
 [<Sealed>]
 type Future<'T>() =
@@ -66,14 +59,14 @@ type Future<'T>() =
 
     member this.Set<'T>(value: 'T) =
         lock root <| fun () ->
-            if v.IsSome then
-                failwith "Cannot set a Future twice"
-            else
+            if v.IsNone then
                 v <- Some value
                 for w in waiters do
                     async { return w.Invoke(value) }
                     |> Async.Start
                 waiters.Clear()
+
+    member this.Is = v.IsSome
 
 [<Sealed>]
 type FutureHandle<'T>(f: Future<'T>) =
@@ -82,84 +75,80 @@ type FutureHandle<'T>(f: Future<'T>) =
 
 [<Sealed>]
 type Future =
+
     static member Create<'T>() : FutureHandle<'T> =
         FutureHandle<'T>(Future<'T>())
 
-type Exit =
-    | ErrorExit of exn
-    | NormalExit
+    static member internal Both(a: Future<unit>, b: Future<unit>) =
+        let f = Future.Create()
+        let k = ref 0
+        let g () =
+            if Interlocked.Increment(&k.contents) = 2 then
+                f.Set(())
+        let h = Action<unit>(g)
+        a.On(h)
+        b.On(h)
+        f.Future
 
-    member x.Exception =
-        match x with
-        | ErrorExit e -> e
-        | NormalExit -> exn ()
-
-    member x.IsError =
-        match x with
-        | ErrorExit e -> true
-        | NormalExit -> false
+    static member internal First(a: Future<'T>, b: Future<'T>) =
+        let f = Future.Create()
+        let k = ref 0
+        let g x =
+            if Interlocked.Increment(&k.contents) = 1 then
+                f.Set(x)
+        let h = Action<'T>(g)
+        a.On(h)
+        b.On(h)
+        f.Future
 
 [<Sealed>]
-type Custodian(report: Action<exn>) =
-    let root = obj ()
-    let finalizers = ResizeArray()
-    let mutable closed = false
-    let futureHandle = Future.Create()
-    let mutable exit = NormalExit
+type Channel(capacity: int) =
+    let fin = Future.Create()
+    let rb = RingQueue<byte>(capacity, fun () -> fin.Set(()))
+    let ch1 = InputChannel(rb)
+    let ch2 = OutputChannel(rb)
+    new () = Channel(16384)
+    member ch.Close() = rb.Close()
+    member ch.Done = fin.Future
+    member ch.In = ch1
+    member ch.Out = ch2
+    member ch.IsClosed = rb.IsClosed
 
-    let report e =
-        exit <- Exit.ErrorExit e
-        report.Invoke(e)
+module Async =
 
-    let wrap main =
-        async { try return! main with e -> return report e }
-
-    new () =
-        new Custodian(Action<exn>(ignore))
-
-    interface IDisposable with
-        member c.Dispose() = c.Close()
-
-    member c.Add(d: IDisposable) =
-        c.Finally(Action(d.Dispose))
-
-    member c.AsyncFinally(work: Async<unit>) =
-        lock root <| fun () ->
-            if closed
-                then Async.Start(work)
-                else finalizers.Add(work)
-
-    member c.Close(result) =
-        lock root <| fun () ->
-            if not closed then
-                if not exit.IsError then
-                    exit <- result
-                closed <- true
-                let fs = finalizers.ToArray()
-                async {
-                    for f in fs do
-                        return! wrap f
-                    return futureHandle.Set(exit)
-                }
-                |> Async.Start
-                finalizers.Clear()
-
-    member c.Close() =
-        c.Close(NormalExit)
-
-    member c.Finally(work: Action) =
-        async { return work.Invoke() }
-        |> c.AsyncFinally
-
-    member c.Report(e) =
-        report e
-
-    member c.Start(work: Async<unit>) =
+    // TODO: better efficiency here.
+    let Wrap fin main =
         async {
-            use _ = c
-            return! wrap work
+            let! res =
+                async {
+                    try
+                        let! v = main
+                        return Choice1Of2 v
+                    with e ->
+                        return Choice2Of2 e
+                }
+            match res with
+            | Choice1Of2 r ->
+                do! fin
+                return r
+            | Choice2Of2 e ->
+                try do! fin with err -> ()
+                return raise e
+        }
+
+    let CaptureError (report: exn -> unit) (main: Async<unit>) =
+        async {
+            try
+                return! main
+            with e ->
+                return report e
+        }
+
+    let StartThread (handle: FutureHandle<unit>) (main: Async<unit>) =
+        async {
+            try
+                return! main
+            finally
+                handle.Set(())
         }
         |> Async.Start
-
-    member c.Closed = futureHandle.Future
-

@@ -55,6 +55,7 @@
     <Compile Include="Collections.fs" />
     <Compile Include="Definitions.fsi" />
     <Compile Include="Definitions.fs" />
+    <Compile Include="Messaging.fsi" />
     <Compile Include="Messaging.fs" />
     <Compile Include="Sockets.fsi" />
     <Compile Include="Sockets.fs" />

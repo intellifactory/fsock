@@ -21,91 +21,242 @@ namespace FSock
 open System
 open System.Net
 open System.Net.Sockets
+open System.Threading
 #nowarn "40"
 
 [<Sealed>]
 exception SocketException of SocketError with
-
     override this.Message =
         match this :> exn with
         | SocketException err -> string err
         | _ -> "impossible"
 
 [<Sealed>]
-type SocketArgs() =
-    inherit SocketAsyncEventArgs()
+type SocketPool(capacity: int) =
+    let items =
+        let all =
+            let chunkSize = 8192
+            let memory : byte [] = Array.zeroCreate (chunkSize * capacity)
+            let mk i = ArraySegment<byte>(memory, chunkSize * i, chunkSize)
+            Seq.init capacity mk
+        Bag(all)
+    new () = new SocketPool(32)
+    member this.CheckIn(v) = items.Add(v)
+    member this.CheckOut(k) = items.Take(k)
 
-    member val H1 : unit -> unit = ignore with get, set
-    member val H2 : exn -> unit = ignore with get, set
+module Sockets =
 
-    member args.Handle() =
-        match args.SocketError with
-        | SocketError.Success ->
-            let h1 = args.H1
-            args.H1 <- ignore
-            args.H2 <- ignore
-            h1 ()
-        | e ->
-            let h2 = args.H2
-            args.H1 <- ignore
-            args.H2 <- ignore
-            h2 (SocketException e)
+    let IsBenign error =
+        match error with
+        | SocketError.ConnectionReset
+        | SocketError.Disconnecting
+        | SocketError.OperationAborted
+        | SocketError.Shutdown -> true
+        | _ -> false
 
-    override args.OnCompleted(_) =
-        args.Handle()
-
-    member args.Do(op: SocketAsyncEventArgs -> bool) : Async<unit> =
-        Async.FromContinuations(fun (ok, no, _) ->
-            args.H1 <- ok
-            args.H2 <- no
-            if not (op args) then
-                args.Handle())
+(*
+    Below: a few state machines from hell.
+    Would be much nicer to use something higher-level, perhaps CML/Hopac.
+*)
 
 [<Sealed>]
-type SocketPool(capacity: int) =
+type SocketSender
+    (
+        pool: SocketPool,
+        buf: ArraySegment<byte>,
+        report: exn -> unit,
+        socket: Socket,
+        input: InputChannel,
+        fut: FutureHandle<unit>
+    ) as args =
 
-    let all =
-        let chunkSize = 8192
-        let memory : byte [] = Array.zeroCreate (chunkSize * capacity)
-        let mk i =
-            let args = new SocketArgs()
-            args.SetBuffer(memory, chunkSize * i, chunkSize)
-            args
-        Array.init capacity mk
+    inherit SocketAsyncEventArgs()
 
-    let items =
-        Bag(all)
+    let received : int -> unit = args.Received
+    let error : exn -> unit = args.Error
 
-    new () = new SocketPool(32)
+    override a.OnCompleted(_) =
+        match a.SocketError with
+        | SocketError.Success -> a.Sent()
+        | _ -> a.Error()
 
-    member this.WithLease(work: SocketArgs -> Async<'T>) : Async<'T> =
-        async {
-            let! item = items.AsyncTake()
-            try
-                return! work item
-            finally
-                items.Add(item)
-        }
+    member a.Error() =
+        if not (Sockets.IsBenign a.SocketError) then
+            report (SocketException a.SocketError)
+        a.Stop()
 
-    interface IDisposable with
-        member this.Dispose() =
-            for x in all do
-                x.Dispose()
+    member a.Error(e: exn) =
+        match e with
+        | :? ObjectDisposedException -> a.Stop()
+        | _ -> report e; a.Stop()
+
+    member a.Received(k: int) =
+        try
+            if k = 0 && input.IsClosed then
+                a.Stop()
+            else
+                a.SetBuffer(a.Offset, k)
+                let sched =
+                    try
+                        socket.SendAsync(a)
+                    with e ->
+                        a.Error(e)
+                        true
+                if not sched then
+                    a.Sent()
+        with e ->
+            a.Error(e)
+
+    member a.Sent() =
+        let work = input.AsyncRead(a.Buffer, a.Offset, buf.Count)
+        Async.StartWithContinuations(work, received, error, ignore)
+
+    member a.Start() =
+        a.SetBuffer(buf.Array, buf.Offset, buf.Count)
+        a.Sent()
+
+    member a.Stop() =
+        a.SetBuffer(Array.empty, 0, 0)
+        pool.CheckIn(buf)
+        a.Dispose()
+        fut.Set(())
+
+    static member Fork(pool: SocketPool, socket, report, input) =
+        let fut = Future.Create()
+        pool.CheckOut(fun buf ->
+            let p = new SocketSender(pool, buf, report, socket, input, fut)
+            p.Start())
+        fut.Future
+
+[<Sealed>]
+type SocketReceiver
+    (
+        pool: SocketPool,
+        buf: ArraySegment<byte>,
+        report: exn -> unit,
+        socket: Socket,
+        out: OutputChannel,
+        fut: FutureHandle<unit>
+    ) as args =
+
+    inherit SocketAsyncEventArgs()
+
+    let sent : unit -> unit = args.Sent
+    let error : exn -> unit = args.Error
+
+    override a.OnCompleted(_) =
+        match a.SocketError with
+        | SocketError.Success -> a.Received()
+        | _ -> a.Error()
+
+    member a.Error() =
+        if not (Sockets.IsBenign a.SocketError) then
+            report (SocketException a.SocketError)
+        a.Stop()
+
+    member a.Error(e: exn) =
+        match e with
+        | :? ObjectDisposedException -> a.Stop()
+        | _ -> report e; a.Stop()
+
+    member a.Received() =
+        if out.IsClosed then
+            a.Stop()
+        else
+            let work = out.AsyncWrite(a.Buffer, a.Offset, a.BytesTransferred)
+            Async.StartWithContinuations(work, sent, error, ignore)
+
+    member a.Sent() =
+        try
+            if socket.ReceiveAsync(a) |> not then
+                a.Received()
+        with e ->
+            a.Error(e)
+
+    member a.Start() =
+        a.SetBuffer(buf.Array, buf.Offset, buf.Count)
+        a.Sent()
+
+    member a.Stop() =
+        a.SetBuffer(Array.empty, 0, 0)
+        pool.CheckIn(buf)
+        a.Dispose()
+        fut.Set(())
+
+    static member Fork(pool: SocketPool, socket, report, output) =
+        let fut = Future.Create()
+        pool.CheckOut(fun buf ->
+            let p = new SocketReceiver(pool, buf, report, socket, output, fut)
+            p.Start())
+        fut.Future
+
+[<Sealed>]
+type SocketAcceptor(k1: option<Socket> -> unit, k2: exn -> unit) =
+    inherit SocketAsyncEventArgs()
+
+    let mutable isDone = 0
+
+    override a.OnCompleted(_) =
+        if Interlocked.Increment(&isDone) = 1 then
+            match a.SocketError with
+            | SocketError.Success ->
+                let s = a.AcceptSocket
+                a.Dispose()
+                k1 (Some s)
+            | e ->
+                a.Dispose()
+                k2 (SocketException e)
+
+    member a.Cancel() =
+        if Interlocked.Increment(&isDone) = 1 then
+            a.Dispose()
+            k1 None
+
+    member a.Start(socket: Socket) =
+        if socket.AcceptAsync(a) |> not then
+            a.OnCompleted(a)
+
+    static member AsyncAccept(stop: Future<unit>, socket) =
+        Async.FromContinuations(fun (k1, k2, _) ->
+            let self = new SocketAcceptor(k1, k2)
+            stop.On(fun () -> self.Cancel())
+            self.Start(socket))
+
+[<Sealed>]
+type SocketOp(k1: unit -> unit, k2: exn -> unit) =
+    inherit SocketAsyncEventArgs()
+
+    member op.Complete() =
+        match op.SocketError with
+        | SocketError.Success ->
+            op.Dispose()
+            k1 ()
+        | e ->
+            op.Dispose()
+            k2 (SocketException e)
+
+    override op.OnCompleted(_) =
+        op.Complete()
 
 module SocketUtility =
 
-    let Accept (socket: Socket) =
-        async {
-            use args = new SocketArgs()
-            do! args.Do(socket.AcceptAsync)
-            return args.AcceptSocket
-        }
+    type A = SocketAsyncEventArgs
+
+    let inline doAsync (op: A -> bool) =
+        Async.FromContinuations(fun (k1, k2, _) ->
+            let so = new SocketOp(k1, k2)
+            if not (op so) then
+                so.Complete())
+
+    let Accept stop socket =
+        SocketAcceptor.AsyncAccept(stop, socket)
 
     let Connect (ip: IPEndPoint) =
         async {
-            use args = new SocketArgs(RemoteEndPoint = ip)
             let socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
-            do! args.Do(socket.ConnectAsync)
+            do! doAsync (fun args ->
+                    args.RemoteEndPoint <- ip
+                    socket.ConnectAsync(args))
             return socket
         }
 
@@ -114,54 +265,25 @@ module SocketUtility =
             try
                 return! main
             with
-            /// These error codes are normal when the socket gets closed.
-            | SocketException SocketError.Disconnecting
-            | SocketException SocketError.OperationAborted
-            | SocketException SocketError.Shutdown
-
-            /// Normal when the socket gets closed and cleaned up.
+            | SocketException x when Sockets.IsBenign x ->
+                return () // These error codes are normal when the socket gets closed.
             | :? ObjectDisposedException ->
-                return ()
+                return () // Normal when the socket gets closed and cleaned up.
         }
 
     let Disconnect (socket: Socket) =
-        async {
-            use args = new SocketArgs()
-            return! args.Do(socket.DisconnectAsync)
-        }
+        doAsync socket.DisconnectAsync
         |> IgnoreErrors
 
-    (*
-        NOTES:
-            can probably do a lot better for Receive/Send, avoiding
-            allocating intermediate Async's.
-    *)
+    type Context =
+        {
+            Report : exn -> unit
+            Socket : Socket
+            SocketPool : SocketPool
+        }
 
-    let Receive (pool: SocketPool) (socket: Socket) (out: OutputChannel) =
-        pool.WithLease <| fun args ->
-            let buf : byte [] = Array.zeroCreate args.Count
-            let rec loop : Async<unit> =
-                async {
-                    do! args.Do(socket.ReceiveAsync)
-                    match args.BytesTransferred with
-                    | 0 -> return ()
-                    | n ->
-                        do Buffer.BlockCopy(args.Buffer, args.Offset, buf, 0, n)
-                        do! out.AsyncWrite(buf, 0, n)
-                        return! loop
-                }
-            IgnoreErrors loop
+    let ForkReceiver ctx ch =
+        SocketReceiver.Fork(ctx.SocketPool, ctx.Socket, ctx.Report, ch)
 
-    let Send (pool: SocketPool) (socket: Socket) (inp: InputChannel) =
-        pool.WithLease <| fun args ->
-            let buf : byte [] = Array.zeroCreate args.Count
-            let rec loop : Async<unit> =
-                async {
-                    let! n = inp.AsyncRead(buf, 0, buf.Length)
-                    do Buffer.BlockCopy(buf, 0, args.Buffer, args.Offset, n)
-                    do args.SetBuffer(args.Offset, n)
-                    do! args.Do(socket.SendAsync)
-                    do args.SetBuffer(args.Offset, buf.Length)
-                    return! loop
-                }
-            IgnoreErrors loop
+    let ForkSender ctx ch =
+        SocketSender.Fork(ctx.SocketPool, ctx.Socket, ctx.Report, ch)

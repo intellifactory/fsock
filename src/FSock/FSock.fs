@@ -18,18 +18,30 @@
 
 namespace FSock
 
+#nowarn "40"
+
 open System
+open System.Collections
+open System.Collections.Generic
 open System.Net
 open System.Net.Sockets
 open System.Threading
 open System.Threading.Tasks
 
 [<Sealed>]
-type Connection(custodian: Custodian, inp: InputChannel, out: OutputChannel) =
+type Connection(socket: Socket, close: unit -> unit, closed: Future<unit>, inp: InputChannel, out: OutputChannel, report: exn -> unit) =
 
-    interface IDisposable with
-        member c.Dispose() =
-            c.Close()
+    let asyncClose =
+        async {
+            do close ()
+            return! closed.AsyncAwait()
+        }
+
+    member c.AsyncClose() =
+        asyncClose
+
+    member c.AsyncWrap(work) =
+        Async.Wrap asyncClose work
 
     member c.AsyncReceiveMessage() =
         Messaging.AsyncReceiveMessage inp
@@ -38,43 +50,55 @@ type Connection(custodian: Custodian, inp: InputChannel, out: OutputChannel) =
         Messaging.AsyncSendMessage out msg
 
     member c.Close() =
-        custodian.Close()
+        Async.StartAsTask(asyncClose) :> Task
 
     member c.ReceiveMessage() =
         c.AsyncReceiveMessage()
         |> Async.StartAsTask
 
+    member c.Report(e) =
+        report e
+
     member c.SendMessage(msg) =
         c.AsyncSendMessage(msg)
         |> Async.StartAsTask :> Task
 
-    member c.Closed = custodian.Closed
-    member c.Custodian = custodian
+    member c.Terminate() =
+        try close (); socket.Close() with :? ObjectDisposedException -> ()
+
+    member c.Closed = closed
     member c.InputChannel = inp
     member c.OutputChannel = out
 
     static member Create(pool: SocketPool, socket: Socket, report: exn -> unit) =
-        let custodian = new Custodian(Action<exn>(report))
-        let wrap main =
-            async { try return! main with e -> return custodian.Report(e) }
-        let par2 work1 work2 =
-            Async.Parallel [| work1; work2 |]
-            |> Async.Ignore
+        let closed = Future.Create()
         let c1 = Channel()
         let c2 = Channel()
-        let stop =
-            async {
-                use _ = socket
-                return! SocketUtility.Disconnect socket
+        let close () =
+            c1.Close()
+            c2.Close()
+        let ctx : SocketUtility.Context =
+            {
+                Socket = socket
+                SocketPool = pool
+                Report = report
             }
-            |> wrap
-        let work =
-            let receive = SocketUtility.Receive pool socket c1.Out
-            let send = SocketUtility.Send pool socket c2.In
-            par2 (wrap receive) (wrap send)
-        custodian.AsyncFinally(stop)
-        custodian.Start(work)
-        new Connection(custodian, c1.In, c2.Out)
+        let receiverDone = SocketUtility.ForkReceiver ctx c1.Out
+        let senderDone = SocketUtility.ForkSender ctx c2.In
+        async {
+            try
+                use _ = socket
+                do! senderDone.AsyncAwait()
+                do! receiverDone.AsyncAwait()
+                return!
+                    SocketUtility.Disconnect socket
+                    |> Async.CaptureError report
+            with :? ObjectDisposedException ->
+                return ()
+        }
+        |> Async.CaptureError report
+        |> Async.StartThread closed
+        new Connection(socket, close, closed.Future, c1.In, c2.Out, report)
 
 [<Sealed>]
 type ServerConfig() =
@@ -97,38 +121,62 @@ type ServerConfig() =
         and set x = c.IPEndPoint <- IPEndPoint(c.IPEndPoint.Address, x)
 
 [<Sealed>]
-type Server(custodian: Custodian) =
+type Server(stop: unit -> unit, stopped: Future<unit>) =
 
     static let start (config: ServerConfig) =
-        let custodian = new Custodian(config.Report)
-        let listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
-        let pool = new SocketPool()
-        custodian.Add(listenSocket)
-        custodian.Add(pool)
-        listenSocket.Bind(config.IPEndPoint)
-        listenSocket.Listen(config.Backlog)
-        let onConnect = config.OnConnect
-        let handleConnection socket =
-            Connection.Create(pool, socket, config.Report.Invoke)
-            |> onConnect.Invoke
+        let report = config.Report.Invoke
+        let stopped = Future.Create()
+        let stopRequested = Future.Create()
+        let connections = LockedHashSet<Connection>()
+        let pool = SocketPool()
+        let handle sock =
+            let conn = Connection.Create(pool, sock, report)
+            connections.Add(conn)
+            conn.Closed.On(fun _ -> connections.Remove(conn))
+            async { return config.OnConnect.Invoke(conn) }
+            |> Async.CaptureError config.Report.Invoke
+            |> Async.Start
         async {
-            while true do
-                let! socket = SocketUtility.Accept listenSocket
-                do handleConnection socket
+            use listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            try
+                do
+                    listenSocket.Bind(config.IPEndPoint)
+                    listenSocket.Listen(config.Backlog)
+                let rec loop =
+                    async {
+                        let! sock = SocketUtility.Accept stopRequested.Future listenSocket
+                        match sock with
+                        | None -> return ()
+                        | Some sock ->
+                            do handle sock
+                            return! loop
+                    }
+                return! loop
+            finally
+                for c in connections.ToArray() do
+                    try c.Terminate() with e -> report e
         }
-        |> SocketUtility.IgnoreErrors
-        |> custodian.Start
-        custodian
+        |> Async.StartThread stopped
+        let stop () = stopRequested.Set(())
+        Server(stop, stopped.Future)
 
-    interface IDisposable with
-        member this.Dispose() =
-            this.Stop()
+    let stop =
+        async {
+            do stop ()
+            return! stopped.AsyncAwait()
+        }
+
+    member this.AsyncStop() =
+        stop
+
+    member this.AsyncWrap(work) =
+        Async.Wrap stop work
 
     member this.Stop() =
-        custodian.Close()
+        Async.StartAsTask(stop) :> Task
 
     static member Start(config) =
-        new Server(start config)
+        start config
 
     static member Start(k: Action<_>) =
         let cfg = ServerConfig()
@@ -157,23 +205,16 @@ type ClientConfig() =
 [<Sealed>]
 type Client(conn: Connection) =
 
-    interface IDisposable with
-        member c.Dispose() = conn.Close()
-
     member c.Connection = conn
 
     static member AsyncConnect(conf: ClientConfig) =
         async {
             let! socket = SocketUtility.Connect conf.IPEndPoint
-            let conn =
+            let pool =
                 match conf.SocketPool with
-                | None ->
-                    let pool = new SocketPool()
-                    let conn = Connection.Create(pool, socket, conf.Report.Invoke)
-                    conn.Custodian.Add(pool)
-                    conn
-                | Some pool ->
-                    Connection.Create(pool, socket, conf.Report.Invoke)
+                | None -> SocketPool()
+                | Some pool -> pool
+            let conn = Connection.Create(pool, socket, conf.Report.Invoke)
             return new Client(conn)
         }
 

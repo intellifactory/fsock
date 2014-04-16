@@ -20,6 +20,22 @@ namespace FSock
 
 open System
 
+/// HashSet with a lock for thread safety.
+[<Sealed>]
+type internal LockedHashSet<'T> =
+
+    /// Creates a new one.
+    new : unit -> LockedHashSet<'T>
+
+    /// Adds an item.
+    member Add : 'T -> unit
+
+    /// Removes an item.
+    member Remove : 'T -> unit
+
+    /// Extracts held items.
+    member ToArray : unit -> 'T []
+
 /// Equivalent of ConcurrentBag, but with item retrieval raised to Async.
 /// This collection is thread-safe.
 [<Sealed>]
@@ -64,7 +80,13 @@ type internal RingBuffer<'T> =
 type internal RingQueue<'T> =
 
     /// Creates a new queue backed by a buffer of given capacity.
-    new : capacity: int -> RingQueue<'T>
+    /// The onFinalized handler is called after Close command when
+    /// all buffered elements are read.
+    new : capacity: int * onFinalized : (unit -> unit) -> RingQueue<'T>
+
+    /// Closes the channel, releasing any processes waiting on the channel.
+    /// Subsequent writes return immediately, and reads also, with 0 bytes read.
+    member Close : unit -> unit
 
     /// Reads into target buffer, returns number of bytes read.
     member AsyncRead : target: 'T[] * offset: int * count: int -> Async<int>
@@ -80,3 +102,6 @@ type internal RingQueue<'T> =
 
     /// Continuation version of AsyncWrite.
     member Write : source: 'T[] * offset: int * count: int * (unit -> unit) -> unit
+
+    /// Whether the queue is closed.
+    member IsClosed : bool
