@@ -85,11 +85,11 @@ type Connection(socket: Socket, close: unit -> unit, closed: Future<unit>, inp: 
             }
         let receiverDone = SocketUtility.ForkReceiver ctx c1.Out
         let senderDone = SocketUtility.ForkSender ctx c2.In
+        let fin = Future.First(Future.Both(c1.Done, c2.Done), Future.Both(senderDone, receiverDone))
         async {
             try
                 use _ = socket
-                do! senderDone.AsyncAwait()
-                do! receiverDone.AsyncAwait()
+                do! fin.AsyncAwait()
                 return!
                     SocketUtility.Disconnect socket
                     |> Async.CaptureError report

@@ -47,14 +47,19 @@ let all () =
                 cfg.Report <- fun e -> report "server" e
                 cfg.Port <- port
                 cfg.OnConnect <- fun conn ->
+                    conn.Closed.On(fun () ->
+                        async {
+                            do! server.AsyncStop()
+                            return fut.Set(())
+                        }
+                        |> Async.Start)
                     async {
                         for i in 1 .. domain.Length do
                             let! msg = conn.AsyncReceiveMessage()
                             do! conn.AsyncSendMessage(Array.append msg msg)
                             do received.Enqueue(msg)
-                        do! server.AsyncStop()
-                        return fut.Set(())
                     }
+                    |> conn.AsyncWrap
                     |> Async.Start)
         fut.Future.AsyncAwait()
     let wrap main =

@@ -160,7 +160,7 @@ type SocketReceiver
         | _ -> report e; a.Stop()
 
     member a.Received() =
-        if out.IsClosed then
+        if out.IsClosed || a.BytesTransferred = 0 then
             a.Stop()
         else
             let work = out.AsyncWrite(a.Buffer, a.Offset, a.BytesTransferred)
