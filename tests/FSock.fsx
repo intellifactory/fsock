@@ -69,5 +69,3 @@ let all () =
         failwithf "FSock: encountered errors"
     server.AsyncStop() |> Async.RunSynchronously
     log "FSock: OK"
-
-all ()
