@@ -40,31 +40,24 @@ let all () =
                 |> cli.Connection.AsyncWrap
             return ()
         }
+    let serverDone = FSock.Future.Create()
     let server =
-        let fut = FSock.Future.Create()
-        let rec server : FSock.Server =
-            FSock.Server.Start(fun cfg ->
-                cfg.Report <- fun e -> report "server" e
-                cfg.Port <- port
-                cfg.OnConnect <- fun conn ->
-                    conn.Closed.On(fun () ->
-                        async {
-                            do! server.AsyncStop()
-                            return fut.Set(())
-                        }
-                        |> Async.Start)
-                    async {
-                        for i in 1 .. domain.Length do
-                            let! msg = conn.AsyncReceiveMessage()
-                            do! conn.AsyncSendMessage(Array.append msg msg)
-                            do received.Enqueue(msg)
-                    }
-                    |> conn.AsyncWrap
-                    |> Async.Start)
-        fut.Future.AsyncAwait()
+        FSock.Server.Start(fun cfg ->
+            cfg.Report <- fun e -> report "server" e
+            cfg.Port <- port
+            cfg.OnConnect <- fun conn ->
+                async {
+                    for i in 1 .. domain.Length do
+                        let! msg = conn.AsyncReceiveMessage()
+                        do! conn.AsyncSendMessage(Array.append msg msg)
+                        do received.Enqueue(msg)
+                    return serverDone.Set(())
+                }
+                |> conn.AsyncWrap
+                |> Async.Start)
     let wrap main =
         async { try return! main with e -> return errors.Add(e) }
-    Async.Parallel [| client; server |]
+    Async.Parallel [| client; serverDone.Future.AsyncAwait() |]
     |> Async.Ignore
     |> wrap
     |> Async.RunSynchronously
@@ -74,4 +67,7 @@ let all () =
         for e in errors do
             log "%O" e
         failwithf "FSock: encountered errors"
+    server.AsyncStop() |> Async.RunSynchronously
     log "FSock: OK"
+
+all ()
