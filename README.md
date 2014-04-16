@@ -1,5 +1,10 @@
 # FSock
 
+[![Build status][build-img]][build-link]
+
+[build-img]: https://ci.appveyor.com/api/projects/status/31keofhxwre220ux
+[build-link]: https://ci.appveyor.com/project/t0yv0/fsock
+
 Simple API for communicating async socket clients and servers.
 
 FSock implements an API for creating async socket clients and servers
