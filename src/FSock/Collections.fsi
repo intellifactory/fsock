@@ -92,7 +92,7 @@ type internal RingQueue<'T> =
     member AsyncRead : target: 'T[] * offset: int * count: int -> Async<int>
 
     /// Reads until the target buffer is entirely filled.
-    member AsyncReadExact : target: 'T[] * offset: int * count: int -> Async<unit>
+    member AsyncReadExact : target: 'T[] * offset: int * count: int -> Async<bool>
 
     /// Writes from the source buffer, returns when the write is complete.
     member AsyncWrite : source: 'T[] * offset: int * count: int -> Async<unit>

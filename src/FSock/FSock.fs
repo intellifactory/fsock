@@ -145,7 +145,7 @@ type Server(stop: unit -> unit, stopped: Future<unit>) =
                     async {
                         let! sock = SocketUtility.Accept stopRequested.Future listenSocket
                         match sock with
-                        | None -> return ()
+                        | None -> stopped.Set()
                         | Some sock ->
                             do handle sock
                             return! loop
@@ -156,7 +156,7 @@ type Server(stop: unit -> unit, stopped: Future<unit>) =
                     try c.Terminate() with e -> report e
         }
         |> Async.StartThread stopped
-        let stop () = stopRequested.Set(())
+        let stop () = stopRequested.Set()
         Server(stop, stopped.Future)
 
     let stop =

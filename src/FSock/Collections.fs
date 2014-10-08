@@ -231,9 +231,10 @@ type RingQueue<'T>(capacity: int, onFinalized: unit -> unit) =
 
     member rb.AsyncReadExact(b, o, c) =
         async {
+            if closed then return false else
             let! n = rb.AsyncRead(b, o, c)
             if n = c then
-                return ()
+                return true
             else
                 return! rb.AsyncReadExact(b, o + n, c - n)
         }

@@ -43,9 +43,11 @@ module internal Messaging =
     let AsyncReceiveMessage (inp: InputChannel) =
         async {
             let buf = Array.zeroCreate 4
-            do! inp.AsyncReadExact(buf, 0, 4)
+            let! ok = inp.AsyncReadExact(buf, 0, 4)
+            if not ok then return None else
             let n = readUInt32 buf 0
             let buf = Array.zeroCreate (int n)
-            do! inp.AsyncReadExact(buf, 0, buf.Length)
-            return buf
+            let! ok = inp.AsyncReadExact(buf, 0, buf.Length)
+            if not ok then return None else
+            return Some buf
         }

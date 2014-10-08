@@ -34,7 +34,7 @@ type Connection =
 
     /// Receives a length-prefixed binary message.
     /// You can also use InputChannel for more direct byte-level access.
-    member AsyncReceiveMessage : unit -> Async<byte[]>
+    member AsyncReceiveMessage : unit -> Async<option<byte[]>>
 
     /// Sends a length-prefixed binary message.
     /// You can also use OutputChannel for more direct byte-level access.
@@ -52,7 +52,7 @@ type Connection =
     member Report : exn -> unit
 
     /// Task form of AsyncReceiveMessage.
-    member ReceiveMessage : unit -> Task<byte[]>
+    member ReceiveMessage : unit -> Task<option<byte[]>>
 
     /// Task form of SendMessage.
     member SendMessage : byte[] -> Task

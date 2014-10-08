@@ -72,7 +72,7 @@ type InputChannel =
     member AsyncRead : target: byte[] * offset: int * count: int -> Async<int>
 
     /// Reads until the target buffer is entirely filled.
-    member AsyncReadExact : target: byte[] * offset: int * count: int -> Async<unit>
+    member AsyncReadExact : target: byte[] * offset: int * count: int -> Async<bool>
 
 /// Represents a channel that can be written to.
 [<Sealed>]

@@ -21,4 +21,4 @@ namespace FSock
 /// Simple length-prefixed messages over channels.
 module internal Messaging =
     val AsyncSendMessage : OutputChannel -> byte[] -> Async<unit>
-    val AsyncReceiveMessage : InputChannel -> Async<byte[]>
+    val AsyncReceiveMessage : InputChannel -> Async<option<byte[]>>
